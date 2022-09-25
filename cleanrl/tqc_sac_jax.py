@@ -20,9 +20,12 @@ from flax.training.train_state import TrainState
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.rich import tqdm
+from ae.wrapper import AutoencoderWrapper
+from wrappers import HistoryWrapper, LapTimeCallback
+import gym_donkeycar # noqa
 
 tfp = tensorflow_probability.substrates.jax
 tfd = tfp.distributions
@@ -45,7 +48,7 @@ def parse_args():
         help="seed of the experiment")
     parser.add_argument("--track", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
         help="if toggled, this experiment will be tracked with Weights and Biases")
-    parser.add_argument("--wandb-project-name", type=str, default="cleanRL",
+    parser.add_argument("--wandb-project-name", type=str, default="donkeycar",
         help="the wandb's project name")
     parser.add_argument("--wandb-entity", type=str, default=None,
         help="the entity (team) of wandb's project")
@@ -91,9 +94,12 @@ def parse_args():
 
 def make_env(env_id, seed, idx, capture_video=False, run_name=""):
     def thunk():
-        env = gym.make(env_id)
+        env = gym.make(env_id, min_throttle=-0.2, max_throttle=1.5)
         # env = RescaleAction(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = gym.wrappers.RescaleAction(env, -1, 1)
+        env = AutoencoderWrapper(env)
+        env = HistoryWrapper(env, horizon=2)
         if capture_video:
             if idx == 0:
                 env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
@@ -223,7 +229,10 @@ def main():
 
     # env setup
     envs = DummyVecEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
-    eval_envs = make_vec_env(args.env_id, n_envs=args.n_eval_envs, seed=args.seed)
+    envs = VecNormalize(envs, norm_reward=False)
+    if args.eval_freq > 0:
+        eval_envs = make_vec_env(args.env_id, n_envs=args.n_eval_envs, seed=args.seed)
+    callback = LapTimeCallback(writer)
 
     assert isinstance(envs.action_space, gym.spaces.Box), "only continuous action space is supported"
 
@@ -536,9 +545,11 @@ def main():
             key, exploration_key = jax.random.split(key, 2)
             actions = np.array(sample_action(actor_state, obs, exploration_key))
 
-        # actions = np.clip(actions, -1.0, 1.0)
+        actions = np.clip(actions, -1.0, 1.0)
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, dones, infos = envs.step(actions)
+
+        callback.step(infos, global_step)
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         for info in infos:
