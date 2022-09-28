@@ -17,6 +17,7 @@ import optax
 import pybullet_envs  # noqa
 import tensorflow_probability
 from flax.training.train_state import TrainState
+from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -34,6 +35,26 @@ class ReplayBufferSamplesNp(NamedTuple):
     next_observations: np.ndarray
     dones: np.ndarray
     rewards: np.ndarray
+
+
+class TQC(BaseAlgorithm):
+    def __init__(self, policy=None, env=None, agent=None, device=None, _init_setup_model=None) -> None:
+        super().__init__(
+            policy=None,
+            env=None,
+            learning_rate=0.0,
+        )
+        self.agent = agent
+
+    def _get_torch_save_params(self):
+        state_dicts = []
+        return state_dicts, []
+
+    def _setup_model(self):
+        pass
+
+    def learn(self):
+        pass
 
 
 def parse_args():
@@ -180,7 +201,7 @@ class Actor(nn.Module):
 
 @dataclass
 class Agent:
-    actor: Actor
+    # actor: Actor
     actor_state: TrainState
 
     def predict(self, obervations: np.ndarray, deterministic=True, state=None, episode_start=None):
@@ -269,7 +290,7 @@ def main():
         apply_fn=ent_coef.apply, params=ent_coef.init(ent_key)["params"], tx=optax.adam(learning_rate=args.learning_rate)
     )
 
-    agent = Agent(actor, actor_state)
+    agent = Agent(actor_state)
 
     qf = QNetwork(
         dropout_rate=args.dropout_rate, use_layer_norm=args.layer_norm, n_units=args.n_units, n_quantiles=n_quantiles
@@ -316,6 +337,11 @@ def main():
         return actor.apply(actor_state.params, obervations).mode()
 
     agent.select_action = select_action
+
+    # model = TQC(agent=agent)
+    # model = TQC.load("test_save")
+    # model.agent.select_action = select_action
+    # print(evaluate_policy(model.agent, eval_envs, n_eval_episodes=args.n_eval_episodes))
 
     @jax.jit
     def update_critic(
@@ -596,7 +622,7 @@ def main():
 
             fps = int(global_step / (time.time() - start_time))
             if args.eval_freq > 0 and global_step % args.eval_freq == 0:
-                agent.actor, agent.actor_state = actor, actor_state
+                agent.actor_state = actor_state
                 mean_reward, std_reward = evaluate_policy(agent, eval_envs, n_eval_episodes=args.n_eval_episodes)
                 print(f"global_step={global_step}, mean_eval_reward={mean_reward:.2f} +/- {std_reward:.2f} - {fps} fps")
                 writer.add_scalar("charts/mean_eval_reward", mean_reward, global_step)
@@ -620,6 +646,7 @@ def main():
 
     envs.close()
     writer.close()
+    model.save("test_save")
 
 
 if __name__ == "__main__":
